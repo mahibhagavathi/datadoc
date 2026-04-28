@@ -96,17 +96,28 @@ def apply_fix(df: pd.DataFrame, issue: dict) -> pd.DataFrame:
                 else:  # neg_to_nan
                     df[col] = numeric.apply(lambda x: np.nan if pd.notna(x) and x < 0 else x)
 
-        elif title == "Extreme / Impossible Values":
+        elif title in ("Extreme / Impossible Values", "Impossible / Out-of-Range Values"):
             if col in df.columns:
                 numeric = pd.to_numeric(df[col], errors="coerce")
-                q1, q99 = numeric.quantile(0.01), numeric.quantile(0.99)
+                DOMAIN_LIMITS = {
+                    "age":(1,110),"year":(1900,2100),"rating":(1,10),
+                    "satisfaction":(1,10),"score":(0,100),"percent":(0,100),
+                    "hours":(0,24),"days":(0,366),"months":(0,12),"years_at":(0,50),"tenure":(0,50),"experience":(0,50),
+                }
+                lo, hi = None, None
+                for kw, (l, h) in DOMAIN_LIMITS.items():
+                    if kw in col.lower():
+                        lo, hi = l, h
+                        break
+                if lo is None:
+                    lo, hi = float(numeric.quantile(0.01)), float(numeric.quantile(0.99))
                 if action == "extreme_to_nan":
-                    df[col] = numeric.apply(lambda x: np.nan if pd.notna(x) and (x < q1 * 10 or x > q99 * 10) else x)
+                    df[col] = numeric.apply(lambda x: np.nan if pd.notna(x) and (x < lo or x > hi) else x)
                 elif action == "extreme_drop_rows":
-                    mask = (numeric >= q1) & (numeric <= q99 * 10)
+                    mask = (numeric >= lo) & (numeric <= hi)
                     df = df[mask | numeric.isna()].reset_index(drop=True)
-                else:  # cap_percentile
-                    df[col] = numeric.clip(lower=numeric.quantile(0.01), upper=numeric.quantile(0.99))
+                else:  # cap
+                    df[col] = numeric.clip(lower=lo, upper=hi)
 
         elif title == "Future Dates in Historical Column":
             if col in df.columns:
@@ -123,14 +134,23 @@ def apply_fix(df: pd.DataFrame, issue: dict) -> pd.DataFrame:
 
         elif title == "Inconsistent Phone Number Formats":
             if col in df.columns:
+                def _standardize_phone(x):
+                    if pd.isna(x) or str(x).strip().lower() in ("not provided", ""):
+                        return x
+                    digits = re.sub(r"[^\d]", "", str(x))
+                    # Strip leading country code 1 if 11 digits
+                    if len(digits) == 11 and digits.startswith("1"):
+                        digits = digits[1:]
+                    if len(digits) == 10:
+                        return f"(+1) {digits[:3]}-{digits[3:6]}-{digits[6:]}"
+                    return x  # leave unchanged if unexpected length
+
                 if action == "phone_flag":
                     df[f"{col}_valid"] = df[col].apply(
                         lambda x: bool(re.match(r"[\d\s\+\-\(\)]{7,}", str(x))) if pd.notna(x) else False
                     )
-                else:  # phone_digits
-                    df[col] = df[col].apply(
-                        lambda x: re.sub(r"[^\d]", "", str(x)) if pd.notna(x) else x
-                    )
+                else:
+                    df[col] = df[col].apply(_standardize_phone)
 
         # ── CONSISTENCY ───────────────────────────────────────────────────────
         elif title == "Inconsistent Category Casing":
